@@ -1,0 +1,3 @@
+[workspace]
+members = ["kernel", "slaballoc", "fat32"]
+resolver = "2"
