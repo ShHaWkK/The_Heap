@@ -3,13 +3,7 @@ name = "kernel"
 version = "0.1.0"
 edition = "2021"
 
-[profile.dev]
-panic = "abort"
-
-[profile.release]
-panic = "abort"
-
 [dependencies]
 bootloader = "0.9"
 slaballoc = { path = "../slaballoc" }
-fat32 = { path = "../fat32" }
+fat32_parser = { path = "../fat32" }

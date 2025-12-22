@@ -666,7 +666,7 @@ impl<'a> Fat32Mut<'a> {
                 }
 
                 // match strict sur les octets 8.3
-                if &chunk[0..8] == &name_raw[..] && &chunk[8..11] == &ext_raw[..] {
+                if chunk[0..8] == name_raw[..] && chunk[8..11] == ext_raw[..] {
                     let abs_off = off + i * 32;
                     let parsed = DirEntry::parse(chunk);
                     return Ok((Some(abs_off), parsed));
@@ -889,11 +889,7 @@ fn encode_short_name_8_3(name: &str) -> Result<([u8; 8], [u8; 3]), FatError> {
 
 /// Division entière avec arrondi vers le haut.
 fn div_ceil(a: usize, b: usize) -> usize {
-    if b == 0 {
-        0
-    } else {
-        (a + b - 1) / b
-    }
+    if b == 0 { 0 } else { a.div_ceil(b) }
 }
 
 #[cfg(test)]

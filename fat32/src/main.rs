@@ -294,7 +294,7 @@ fn run_shell(img_path: &str, data: &mut Vec<u8>) {
             "help" => print_shell_help(),
             "pwd" => println!("{current_dir}"),
             "ls" => {
-                let ro = match Fat32::new(&data) {
+                let ro = match Fat32::new(data) {
                     Ok(fs) => fs,
                     Err(e) => {
                         println!("Erreur FAT32: {e:?}");
@@ -310,7 +310,7 @@ fn run_shell(img_path: &str, data: &mut Vec<u8>) {
                 run_ls(&ro, &path);
             }
             "cat" => {
-                let ro = match Fat32::new(&data) {
+                let ro = match Fat32::new(data) {
                     Ok(fs) => fs,
                     Err(e) => {
                         println!("Erreur FAT32: {e:?}");
@@ -326,7 +326,7 @@ fn run_shell(img_path: &str, data: &mut Vec<u8>) {
                 }
             }
             "cd" => {
-                let ro = match Fat32::new(&data) {
+                let ro = match Fat32::new(data) {
                     Ok(fs) => fs,
                     Err(e) => {
                         println!("Erreur FAT32: {e:?}");
