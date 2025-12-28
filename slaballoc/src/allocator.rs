@@ -158,7 +158,7 @@ impl SlabAllocator {
             // Gros alloc => bump direct (simple)
             self.alloc_from_bump(layout)
                 .map(|p| p.as_ptr())
-                .unwrap_or_default()
+                .unwrap_or(core::ptr::null_mut())
         }
     }
 

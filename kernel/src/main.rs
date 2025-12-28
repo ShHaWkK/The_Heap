@@ -32,6 +32,49 @@ struct AlignedHeap<const N: usize> { buf: [u8; N] }
 static mut HEAP: AlignedHeap<HEAP_SIZE> = AlignedHeap { buf: [0; HEAP_SIZE] };
 
 #[cfg(not(test))]
+#[inline(always)]
+unsafe fn outb(port: u16, val: u8) {
+    core::arch::asm!("out dx, al", in("dx") port, in("al") val, options(nomem, nostack, preserves_flags));
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+unsafe fn inb(port: u16) -> u8 {
+    let mut v: u8;
+    core::arch::asm!("in al, dx", out("al") v, in("dx") port, options(nomem, nostack, preserves_flags));
+    v
+}
+
+#[cfg(not(test))]
+fn serial_init() {
+    unsafe {
+        outb(0x3F8 + 1, 0x00);
+        outb(0x3F8 + 3, 0x80);
+        outb(0x3F8 + 0, 0x01);
+        outb(0x3F8 + 1, 0x00);
+        outb(0x3F8 + 3, 0x03);
+        outb(0x3F8 + 2, 0xC7);
+        outb(0x3F8 + 4, 0x0B);
+    }
+}
+
+#[cfg(not(test))]
+fn serial_write_byte(b: u8) {
+    unsafe {
+        while (inb(0x3F8 + 5) & 0x20) == 0 {}
+        outb(0x3F8, b);
+    }
+}
+
+#[cfg(not(test))]
+fn serial_print(s: &str) {
+    for &b in s.as_bytes() {
+        serial_write_byte(b);
+    }
+    serial_write_byte(b'\n');
+}
+
+#[cfg(not(test))]
 fn init_heap() {
     unsafe {
         let start = core::ptr::addr_of_mut!(HEAP.buf[0]) as usize;
@@ -45,8 +88,10 @@ entry_point!(kernel_main);
 #[cfg(not(test))]
 fn kernel_main(_boot_info: &'static BootInfo) -> ! {
     init_heap();
+    serial_init();
 
     crate::vga::print_at_row("Hello VGA from The Heap", 0x0F, 0);
+    serial_print("Hello serial from The Heap");
 
     let img = build_demo_fat32_image();
     if let Ok(fs) = Fat32::new(&img) {
@@ -57,6 +102,7 @@ fn kernel_main(_boot_info: &'static BootInfo) -> ! {
                 s.push_str(&e.name);
             }
             crate::vga::print_at_row(&s, 0x0F, 1);
+            serial_print(&s);
         }
     }
 
@@ -68,6 +114,7 @@ fn kernel_main(_boot_info: &'static BootInfo) -> ! {
         v.push(i);
     }
     let s = String::from("The Heap: allocator OK");
+    serial_print(&s);
     let _ = (v, s);
 
     loop { core::hint::spin_loop(); }
