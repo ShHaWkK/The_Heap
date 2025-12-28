@@ -37,11 +37,17 @@ unsafe fn inb(port: u16) -> u8 {
     v
 }
 
+#[cfg(test)]
+#[repr(u8)]
+enum QemuExitCode { Success = 0x10, Failed = 0x11 }
+
+#[cfg(test)]
 #[inline(always)]
-fn exit_qemu(code: u8) {
-    unsafe { outb(0xF4, code) }
+fn exit_qemu(code: QemuExitCode) {
+    unsafe { outb(0xF4, code as u8) }
 }
 
+/// Initialise le port série COM1 (38400 8N1) pour l’affichage terminal.
 fn serial_init() {
     unsafe {
         outb(0x3F8 + 1, 0x00);
@@ -54,6 +60,7 @@ fn serial_init() {
     }
 }
 
+/// Écrit un octet sur COM1.
 fn serial_write_byte(b: u8) {
     unsafe {
         while (inb(0x3F8 + 5) & 0x20) == 0 {}
@@ -61,6 +68,7 @@ fn serial_write_byte(b: u8) {
     }
 }
 
+/// Écrit une chaîne UTF‑8 sur COM1 et ajoute un saut de ligne.
 fn serial_print(s: &str) {
     for &b in s.as_bytes() {
         serial_write_byte(b);
@@ -68,6 +76,7 @@ fn serial_print(s: &str) {
     serial_write_byte(b'\n');
 }
 
+/// Initialise l’allocateur global sur une zone statique alignée.
 fn init_heap() {
     unsafe {
         let start = core::ptr::addr_of_mut!(HEAP.buf[0]) as usize;
@@ -77,13 +86,16 @@ fn init_heap() {
 
 entry_point!(kernel_main);
 
+/// Point d’entrée du noyau : init heap/série, Hello VGA/série,
+/// intégration FAT32 (listage racine et lecture `HELLO.TXT`),
+/// puis boucle infinie.
 fn kernel_main(_boot_info: &'static BootInfo) -> ! {
     #[cfg(test)]
     {
         init_heap();
         serial_init();
         test_main();
-        exit_qemu(0);
+        exit_qemu(QemuExitCode::Success);
         loop { core::hint::spin_loop(); }
     }
 
@@ -106,6 +118,14 @@ fn kernel_main(_boot_info: &'static BootInfo) -> ! {
                 crate::vga::print_at_row(&s, 0x0F, 1);
                 serial_print(&s);
             }
+            if let Ok(content) = fs.read_file_by_path("/HELLO.TXT") {
+                if let Some(bytes) = content {
+                    if let Ok(text) = core::str::from_utf8(&bytes) {
+                        crate::vga::print_at_row(text, 0x0F, 2);
+                        serial_print(text);
+                    }
+                }
+            }
         }
 
         use alloc::string::String;
@@ -124,6 +144,7 @@ fn kernel_main(_boot_info: &'static BootInfo) -> ! {
 }
 
 #[cfg(not(test))]
+/// Construit une image FAT32 miniature en mémoire pour la démo.
 fn build_demo_fat32_image() -> alloc::vec::Vec<u8> {
     use alloc::vec;
     const SECTOR_SIZE: usize = 512;
@@ -186,23 +207,27 @@ fn build_demo_fat32_image() -> alloc::vec::Vec<u8> {
 }
 
 #[panic_handler]
+/// Panic handler : en mode test, signale l’échec à QEMU (port 0xF4).
 fn panic(_info: &PanicInfo) -> ! {
     #[cfg(test)]
     {
-        exit_qemu(1);
+        exit_qemu(QemuExitCode::Failed);
     }
     loop { core::hint::spin_loop(); }
 }
 
 #[alloc_error_handler]
+/// Gestionnaire d’échec d’allocation : en mode test, signale l’échec à QEMU.
 fn alloc_error(_layout: core::alloc::Layout) -> ! {
     #[cfg(test)]
     {
-        exit_qemu(1);
+        exit_qemu(QemuExitCode::Failed);
     }
     loop { core::hint::spin_loop(); }
 }
 
+#[cfg(test)]
+/// Test runner minimal pour le framework de test custom.
 fn test_runner(tests: &[&dyn Fn()]) {
     for t in tests {
         t();
@@ -210,6 +235,7 @@ fn test_runner(tests: &[&dyn Fn()]) {
 }
 
 #[cfg(test)]
+/// Test de base : allocation sur le heap global.
 #[test_case]
 fn heap_alloc_works() {
     let mut v = alloc::vec::Vec::new();
