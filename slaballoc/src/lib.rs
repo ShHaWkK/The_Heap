@@ -62,7 +62,7 @@ impl LockedAlloc {
     /// accessible en lecture/écriture, initialisée avant toute allocation.
     pub unsafe fn init(&self, heap_start: usize, heap_size: usize) {
         let mut g = self.0.lock();
-        unsafe { g.init(heap_start, heap_size) };
+        g.init(heap_start, heap_size);
     }
 }
 
