@@ -1,44 +1,35 @@
-#![cfg_attr(not(test), no_std)]
-#![cfg_attr(not(test), no_main)]
-#![cfg_attr(not(test), feature(alloc_error_handler))]
+#![no_std]
+#![no_main]
+#![feature(alloc_error_handler)]
+#![feature(custom_test_frameworks)]
+#![test_runner(crate::test_runner)]
+#![reexport_test_harness_main = "test_main"]
 
-#[cfg(not(test))]
 extern crate alloc;
 
 mod vga;
 
-#[cfg(not(test))]
 use bootloader::BootInfo;
-#[cfg(not(test))]
 use bootloader::entry_point;
-#[cfg(not(test))]
 use fat32_parser::Fat32;
-#[cfg(not(test))]
 use core::panic::PanicInfo;
-#[cfg(not(test))]
 use slaballoc::LockedAlloc;
 
-#[cfg(not(test))]
 #[global_allocator]
 static GLOBAL_ALLOC: LockedAlloc = LockedAlloc::new();
 
-#[cfg(not(test))]
 const HEAP_SIZE: usize = 512 * 1024;
 
-#[cfg(not(test))]
 #[repr(align(64))]
 struct AlignedHeap<const N: usize> { buf: [u8; N] }
 
-#[cfg(not(test))]
 static mut HEAP: AlignedHeap<HEAP_SIZE> = AlignedHeap { buf: [0; HEAP_SIZE] };
 
-#[cfg(not(test))]
 #[inline(always)]
 unsafe fn outb(port: u16, val: u8) {
     core::arch::asm!("out dx, al", in("dx") port, in("al") val, options(nomem, nostack, preserves_flags));
 }
 
-#[cfg(not(test))]
 #[inline(always)]
 unsafe fn inb(port: u16) -> u8 {
     let mut v: u8;
@@ -46,7 +37,11 @@ unsafe fn inb(port: u16) -> u8 {
     v
 }
 
-#[cfg(not(test))]
+#[inline(always)]
+fn exit_qemu(code: u8) {
+    unsafe { outb(0xF4, code) }
+}
+
 fn serial_init() {
     unsafe {
         outb(0x3F8 + 1, 0x00);
@@ -59,7 +54,6 @@ fn serial_init() {
     }
 }
 
-#[cfg(not(test))]
 fn serial_write_byte(b: u8) {
     unsafe {
         while (inb(0x3F8 + 5) & 0x20) == 0 {}
@@ -67,7 +61,6 @@ fn serial_write_byte(b: u8) {
     }
 }
 
-#[cfg(not(test))]
 fn serial_print(s: &str) {
     for &b in s.as_bytes() {
         serial_write_byte(b);
@@ -75,7 +68,6 @@ fn serial_print(s: &str) {
     serial_write_byte(b'\n');
 }
 
-#[cfg(not(test))]
 fn init_heap() {
     unsafe {
         let start = core::ptr::addr_of_mut!(HEAP.buf[0]) as usize;
@@ -83,42 +75,52 @@ fn init_heap() {
     }
 }
 
-#[cfg(not(test))]
 entry_point!(kernel_main);
 
-#[cfg(not(test))]
 fn kernel_main(_boot_info: &'static BootInfo) -> ! {
-    init_heap();
-    serial_init();
+    #[cfg(test)]
+    {
+        init_heap();
+        serial_init();
+        test_main();
+        exit_qemu(0);
+        loop { core::hint::spin_loop(); }
+    }
 
-    crate::vga::print_at_row("Hello VGA from The Heap", 0x0F, 0);
-    serial_print("Hello serial from The Heap");
+    #[cfg(not(test))]
+    {
+        init_heap();
+        serial_init();
 
-    let img = build_demo_fat32_image();
-    if let Ok(fs) = Fat32::new(&img) {
-        if let Ok(entries) = fs.list_root() {
-            let mut s = alloc::string::String::from("ROOT: ");
-            for (i, e) in entries.iter().enumerate() {
-                if i > 0 { s.push(' '); }
-                s.push_str(&e.name);
+        crate::vga::print_at_row("Hello VGA from The Heap", 0x0F, 0);
+        serial_print("Hello serial from The Heap");
+
+        let img = build_demo_fat32_image();
+        if let Ok(fs) = Fat32::new(&img) {
+            if let Ok(entries) = fs.list_root() {
+                let mut s = alloc::string::String::from("ROOT: ");
+                for (i, e) in entries.iter().enumerate() {
+                    if i > 0 { s.push(' '); }
+                    s.push_str(&e.name);
+                }
+                crate::vga::print_at_row(&s, 0x0F, 1);
+                serial_print(&s);
             }
-            crate::vga::print_at_row(&s, 0x0F, 1);
-            serial_print(&s);
         }
+
+        use alloc::string::String;
+        use alloc::vec::Vec;
+
+        let mut v: Vec<u32> = Vec::with_capacity(64);
+        for i in 0..32 {
+            v.push(i);
+        }
+        let s = String::from("The Heap: allocator OK");
+        serial_print(&s);
+        let _ = (v, s);
+
+        loop { core::hint::spin_loop(); }
     }
-
-    use alloc::string::String;
-    use alloc::vec::Vec;
-
-    let mut v: Vec<u32> = Vec::with_capacity(64);
-    for i in 0..32 {
-        v.push(i);
-    }
-    let s = String::from("The Heap: allocator OK");
-    serial_print(&s);
-    let _ = (v, s);
-
-    loop { core::hint::spin_loop(); }
 }
 
 #[cfg(not(test))]
@@ -183,13 +185,34 @@ fn build_demo_fat32_image() -> alloc::vec::Vec<u8> {
     disk
 }
 
-#[cfg(not(test))]
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! { loop { core::hint::spin_loop(); } }
+fn panic(_info: &PanicInfo) -> ! {
+    #[cfg(test)]
+    {
+        exit_qemu(1);
+    }
+    loop { core::hint::spin_loop(); }
+}
 
-#[cfg(not(test))]
 #[alloc_error_handler]
-fn alloc_error(_layout: core::alloc::Layout) -> ! { loop { core::hint::spin_loop(); } }
+fn alloc_error(_layout: core::alloc::Layout) -> ! {
+    #[cfg(test)]
+    {
+        exit_qemu(1);
+    }
+    loop { core::hint::spin_loop(); }
+}
+
+fn test_runner(tests: &[&dyn Fn()]) {
+    for t in tests {
+        t();
+    }
+}
 
 #[cfg(test)]
-fn main() {}
+#[test_case]
+fn heap_alloc_works() {
+    let mut v = alloc::vec::Vec::new();
+    v.push(1);
+    assert_eq!(v.len(), 1);
+}
