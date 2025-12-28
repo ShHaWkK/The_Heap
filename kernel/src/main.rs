@@ -1,5 +1,6 @@
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
+#![cfg_attr(not(test), feature(alloc_error_handler))]
 
 #[cfg(not(test))]
 extern crate alloc;
@@ -185,6 +186,10 @@ fn build_demo_fat32_image() -> alloc::vec::Vec<u8> {
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! { loop { core::hint::spin_loop(); } }
+
+#[cfg(not(test))]
+#[alloc_error_handler]
+fn alloc_error(_layout: core::alloc::Layout) -> ! { loop { core::hint::spin_loop(); } }
 
 #[cfg(test)]
 fn main() {}
