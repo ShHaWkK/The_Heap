@@ -889,7 +889,7 @@ fn encode_short_name_8_3(name: &str) -> Result<([u8; 8], [u8; 3]), FatError> {
 
 /// Division entière avec arrondi vers le haut.
 fn div_ceil(a: usize, b: usize) -> usize {
-    if b == 0 { 0 } else { (a + b - 1) / b }
+    if b == 0 { 0 } else { a.div_ceil(b) }
 }
 
 #[cfg(test)]

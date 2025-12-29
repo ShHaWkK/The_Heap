@@ -58,7 +58,7 @@ fn serial_init() {
     unsafe {
         outb(0x3F8 + 1, 0x00);
         outb(0x3F8 + 3, 0x80);
-        outb(0x3F8 + 0, 0x01);
+        outb(0x3F8, 0x01);
         outb(0x3F8 + 1, 0x00);
         outb(0x3F8 + 3, 0x03);
         outb(0x3F8 + 2, 0xC7);
@@ -175,12 +175,10 @@ fn kernel_main(_boot_info: &'static BootInfo) -> ! {
                 vga_println!("{}", s);
                 serial_print(&s);
             }
-            if let Ok(content) = fs.read_file_by_path("/HELLO.TXT") {
-                if let Some(bytes) = content {
-                    if let Ok(text) = core::str::from_utf8(&bytes) {
-                        vga_println!("{}", text);
-                        serial_print(text);
-                    }
+            if let Ok(Some(bytes)) = fs.read_file_by_path("/HELLO.TXT") {
+                if let Ok(text) = core::str::from_utf8(&bytes) {
+                    vga_println!("{}", text);
+                    serial_print(text);
                 }
             }
         }
