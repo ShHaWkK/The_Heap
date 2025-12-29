@@ -17,7 +17,7 @@ mod vga;
 
 use bootloader::BootInfo;
 use bootloader::entry_point;
-use fat32_parser::Fat32;
+use fat32_parser::{Fat32, Fat32Mut};
 use core::panic::PanicInfo;
 use slaballoc::LockedAlloc;
 
@@ -164,8 +164,46 @@ fn kernel_main(_boot_info: &'static BootInfo) -> ! {
         vga_println!();
         serial_println!("The Heap – kernel");
 
-        let img = build_fat32_image();
-        if let Ok(fs) = Fat32::new(&img) {
+        let mut img = build_fat32_image();
+        if let Ok(mut rw) = Fat32Mut::new(&mut img) {
+            {
+                let ro = rw.as_read();
+                if let Ok(entries) = ro.list_root() {
+                    let mut s = alloc::string::String::from("ROOT: ");
+                    for (i, e) in entries.iter().enumerate() {
+                        if i > 0 { s.push(' '); }
+                        s.push_str(&e.name);
+                    }
+                    vga_println!("{}", s);
+                    serial_print(&s);
+                }
+                if let Ok(Some(bytes)) = ro.read_file_by_path("/HELLO.TXT") {
+                    if let Ok(text) = core::str::from_utf8(&bytes) {
+                        vga_println!("{}", text);
+                        serial_print(text);
+                    }
+                }
+            }
+            let _ = rw.write_file_by_path("/NEW.TXT", b"NEW!");
+            {
+                let ro = rw.as_read();
+                if let Ok(entries) = ro.list_root() {
+                    let mut s = alloc::string::String::from("ROOT (après écriture): ");
+                    for (i, e) in entries.iter().enumerate() {
+                        if i > 0 { s.push(' '); }
+                        s.push_str(&e.name);
+                    }
+                    vga_println!("{}", s);
+                    serial_print(&s);
+                }
+                if let Ok(Some(bytes)) = ro.read_file_by_path("/NEW.TXT") {
+                    if let Ok(text) = core::str::from_utf8(&bytes) {
+                        vga_println!("{}", text);
+                        serial_print(text);
+                    }
+                }
+            }
+        } else if let Ok(fs) = Fat32::new(&img) {
             if let Ok(entries) = fs.list_root() {
                 let mut s = alloc::string::String::from("ROOT: ");
                 for (i, e) in entries.iter().enumerate() {
