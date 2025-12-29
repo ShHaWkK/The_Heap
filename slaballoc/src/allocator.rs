@@ -3,14 +3,15 @@ use core::ptr::NonNull;
 
 use crate::util::{align_up, is_power_of_two};
 
-/// Taille d'une "page" interne(c'est un chunk)
+/// Taille d'un chunk interne (granularité de découpe).
 pub const CHUNK_SIZE: usize = 4096;
 
-/// Classes de tailles (slabs)
+/// Classes de tailles (slabs) pour les petites allocations.
 const SIZE_CLASSES: &[usize] = &[
     8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096,
 ];
 
+/// Nœud de freelist stocké directement dans les blocs libres.
 #[repr(C)]
 struct FreeNode {
     next: Option<NonNull<FreeNode>>,
@@ -20,7 +21,7 @@ struct FreeNode {
 // Leur transfert entre threads est sûr si l’allocator est protégé par un lock.
 unsafe impl Send for FreeNode {}
 
-/// Un cache de freelist par classe de taille.
+/// Cache de freelist par classe de taille.
 #[derive(Copy, Clone)]
 struct Cache {
     head: Option<NonNull<FreeNode>>,
@@ -32,7 +33,7 @@ impl Cache {
     }
 }
 
-/// Etat interne de l'allocator (protégé par lock côté wrapper)
+/// État interne de l'allocator (protégé par lock côté wrapper).
 pub struct SlabAllocator {
     heap_start: usize,
     heap_end: usize,
@@ -44,6 +45,7 @@ pub struct SlabAllocator {
 unsafe impl Send for SlabAllocator {}
 
 impl SlabAllocator {
+    /// Construit un allocator non initialisé.
     pub const fn new() -> Self {
         Self {
             heap_start: 0,
@@ -67,6 +69,7 @@ impl SlabAllocator {
         self.initialized = true;
     }
 
+    /// Retourne l'index de classe de taille compatible avec `layout`.
     fn class_index_for(layout: Layout) -> Option<usize> {
         let size = layout.size().max(layout.align());
         for (i, &cls) in SIZE_CLASSES.iter().enumerate() {

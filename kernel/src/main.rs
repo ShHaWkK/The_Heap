@@ -5,6 +5,12 @@
 #![test_runner(crate::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
+//! Noyau Rust Phil‑Opp :
+//! - VGA texte (écriture directe dans `0xb8000`)
+//! - Port série COM1 pour logs (redirigé par QEMU `-serial stdio`)
+//! - Allocateur global (`#[global_allocator]`) avec démonstration `Vec`/`String`
+//! - Intégration FAT32 en RAM : listage de `/` et lecture de `HELLO.TXT`
+
 extern crate alloc;
 
 mod vga;
@@ -104,7 +110,8 @@ fn kernel_main(_boot_info: &'static BootInfo) -> ! {
         init_heap();
         serial_init();
 
-        crate::vga::print_at_row("Hello VGA from The Heap", 0x0F, 0);
+        crate::vga::vga_set_color(0x0F, 0x00);
+        vga_println!("Hello VGA from The Heap");
         serial_print("Hello serial from The Heap");
 
         let img = build_demo_fat32_image();
@@ -115,13 +122,13 @@ fn kernel_main(_boot_info: &'static BootInfo) -> ! {
                     if i > 0 { s.push(' '); }
                     s.push_str(&e.name);
                 }
-                crate::vga::print_at_row(&s, 0x0F, 1);
+                vga_println!("{}", s);
                 serial_print(&s);
             }
             if let Ok(content) = fs.read_file_by_path("/HELLO.TXT") {
                 if let Some(bytes) = content {
                     if let Ok(text) = core::str::from_utf8(&bytes) {
-                        crate::vga::print_at_row(text, 0x0F, 2);
+                        vga_println!("{}", text);
                         serial_print(text);
                     }
                 }

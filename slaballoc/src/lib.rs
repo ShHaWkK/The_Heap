@@ -1,4 +1,10 @@
 #![cfg_attr(not(test), no_std)]
+//! Allocateur global en `no_std` basé sur un découpage en slabs.
+//! 
+//! - Classes de tailles discrètes pour les petites allocations
+//! - Recyclage via freelists par classe
+//! - Bump allocator pour les grandes tailles (pas de recyclage en V1)
+//! - Protection par spinlock pour un usage sûr en contexte concurrent
 
 mod allocator;
 mod util;
@@ -10,16 +16,19 @@ use core::cell::UnsafeCell;
 use core::hint::spin_loop as cpu_relax;
 use core::sync::atomic::{AtomicBool, Ordering};
 
+/// Spinlock simple (non équitable).
 struct SpinLock<T> {
     locked: AtomicBool,
     inner: UnsafeCell<T>,
 }
 
 impl<T> SpinLock<T> {
+    /// Crée un spinlock contenant `value`.
     pub const fn new(value: T) -> Self {
         Self { locked: AtomicBool::new(false), inner: UnsafeCell::new(value) }
     }
 
+    /// Acquiert le lock en boucle active et retourne un guard RAII.
     fn lock(&self) -> SpinLockGuard<'_, T> {
         while self
             .locked
@@ -35,6 +44,7 @@ impl<T> SpinLock<T> {
 unsafe impl<T: Send> Sync for SpinLock<T> {}
 unsafe impl<T: Send> Send for SpinLock<T> {}
 
+/// Guard RAII du spinlock (libère à `drop`).
 struct SpinLockGuard<'a, T> {
     lock: &'a SpinLock<T>,
 }
@@ -52,14 +62,17 @@ impl<'a, T> Drop for SpinLockGuard<'a, T> {
     fn drop(&mut self) { self.lock.locked.store(false, Ordering::Release); }
 }
 
+/// Wrapper thread-safe de l'allocator par slabs.
 pub struct LockedAlloc(SpinLock<SlabAllocator>);
 
 impl LockedAlloc {
+    /// Construit un allocator verrouillé prêt à être initialisé.
     pub const fn new() -> Self { Self(SpinLock::new(SlabAllocator::new())) }
 
     /// # Safety
     /// `heap_start..heap_start+heap_size` doit désigner une région valide, unique,
     /// accessible en lecture/écriture, initialisée avant toute allocation.
+    /// Ne pas appeler deux fois. Le `heap_start` doit être correctement aligné.
     pub unsafe fn init(&self, heap_start: usize, heap_size: usize) {
         let mut g = self.0.lock();
         g.init(heap_start, heap_size);
