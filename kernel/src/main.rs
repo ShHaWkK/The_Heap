@@ -99,6 +99,13 @@ fn serial_println_args(args: core::fmt::Arguments) {
     serial_write_byte(b'\n');
 }
 
+#[macro_export]
+macro_rules! serial_println {
+    () => { $crate::serial_print("") };
+    ($fmt:expr) => { $crate::serial_println_args(core::format_args!($fmt)) };
+    ($fmt:expr, $($arg:tt)*) => { $crate::serial_println_args(core::format_args!($fmt, $($arg)*)) };
+}
+
 /// Initialise l’allocateur global sur une zone statique alignée.
 fn init_heap() {
     unsafe {

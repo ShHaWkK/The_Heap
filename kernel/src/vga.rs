@@ -84,7 +84,31 @@ impl Writer {
 
     fn newline(&mut self) {
         self.col = 0;
-        self.row = (self.row + 1) % 25;
+        if self.row < 24 {
+            self.row += 1;
+            return;
+        }
+        let buffer = 0xb8000 as *mut u8;
+        for r in 0..24 {
+            for c in 0..80 {
+                let src = ((r + 1) * 80 + c) * 2;
+                let dst = (r * 80 + c) * 2;
+                unsafe {
+                    let ch = core::ptr::read_volatile(buffer.add(src));
+                    let at = core::ptr::read_volatile(buffer.add(src + 1));
+                    core::ptr::write_volatile(buffer.add(dst), ch);
+                    core::ptr::write_volatile(buffer.add(dst + 1), at);
+                }
+            }
+        }
+        for c in 0..80 {
+            let idx = (24 * 80 + c) * 2;
+            unsafe {
+                core::ptr::write_volatile(buffer.add(idx), b' ');
+                core::ptr::write_volatile(buffer.add(idx + 1), self.attr);
+            }
+        }
+        self.row = 24;
     }
 }
 
