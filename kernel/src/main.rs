@@ -134,9 +134,13 @@ fn kernel_main(_boot_info: &'static BootInfo) -> ! {
         init_heap();
         serial_init();
 
-        crate::vga::vga_set_color(0x0F, 0x00);
-        vga_println!("Hello VGA from The Heap");
-        serial_print("Hello serial from The Heap");
+        crate::vga::vga_set_colors(crate::vga::Color::White, crate::vga::Color::Black);
+        crate::vga::vga_clear();
+        vga_println!("==============================");
+        vga_println!(" The Heap – kernel");
+        vga_println!("==============================");
+        vga_println!();
+        serial_println!("The Heap – kernel");
 
         let img = build_demo_fat32_image();
         if let Ok(fs) = Fat32::new(&img) {
@@ -249,7 +253,7 @@ fn panic(info: &PanicInfo) -> ! {
         // Assure que COM1 est configuré
         serial_init();
         // Met la couleur VGA sur rouge vif
-        crate::vga::vga_set_color(0x0C, 0x00);
+        crate::vga::vga_set_colors(crate::vga::Color::LightRed, crate::vga::Color::Black);
         vga_println!();
         vga_println!("=== PANIC ===");
         serial_println_args(core::format_args!("=== PANIC ==="));

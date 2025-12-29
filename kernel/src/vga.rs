@@ -123,8 +123,38 @@ impl fmt::Write for Writer {
 }
 
 #[cfg(not(test))]
+#[allow(dead_code)]
 pub fn vga_set_color(fg: u8, bg: u8) {
     let a = ((bg & 0x0F) << 4) | (fg & 0x0F);
+    let mut g = WRITER.lock();
+    g.attr = a;
+}
+
+#[cfg(not(test))]
+#[allow(dead_code)]
+#[repr(u8)]
+pub enum Color {
+    Black = 0x00,
+    Blue = 0x01,
+    Green = 0x02,
+    Cyan = 0x03,
+    Red = 0x04,
+    Magenta = 0x05,
+    Brown = 0x06,
+    LightGray = 0x07,
+    DarkGray = 0x08,
+    LightBlue = 0x09,
+    LightGreen = 0x0A,
+    LightCyan = 0x0B,
+    LightRed = 0x0C,
+    Pink = 0x0D,
+    Yellow = 0x0E,
+    White = 0x0F,
+}
+
+#[cfg(not(test))]
+pub fn vga_set_colors(foreground: Color, background: Color) {
+    let a = ((background as u8 & 0x0F) << 4) | (foreground as u8 & 0x0F);
     let mut g = WRITER.lock();
     g.attr = a;
 }
@@ -134,6 +164,23 @@ pub fn _print(args: fmt::Arguments) {
     use fmt::Write;
     let mut g = WRITER.lock();
     let _ = g.write_fmt(args);
+}
+
+#[cfg(not(test))]
+pub fn vga_clear() {
+    let buffer = 0xb8000 as *mut u8;
+    let mut g = WRITER.lock();
+    for r in 0..25 {
+        for c in 0..80 {
+            let idx = (r * 80 + c) * 2;
+            unsafe {
+                core::ptr::write_volatile(buffer.add(idx), b' ');
+                core::ptr::write_volatile(buffer.add(idx + 1), g.attr);
+            }
+        }
+    }
+    g.row = 0;
+    g.col = 0;
 }
 
 #[cfg(not(test))]
