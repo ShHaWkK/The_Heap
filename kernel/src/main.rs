@@ -82,6 +82,23 @@ fn serial_print(s: &str) {
     serial_write_byte(b'\n');
 }
 
+/// Écrit des `format_args!` sur COM1 sans allocation puis ajoute un saut de ligne
+fn serial_println_args(args: core::fmt::Arguments) {
+    use core::fmt::Write;
+    struct SW;
+    impl Write for SW {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            for &b in s.as_bytes() {
+                serial_write_byte(b);
+            }
+            Ok(())
+        }
+    }
+    let mut w = SW;
+    let _ = w.write_fmt(args);
+    serial_write_byte(b'\n');
+}
+
 /// Initialise l’allocateur global sur une zone statique alignée.
 fn init_heap() {
     unsafe {
@@ -215,10 +232,31 @@ fn build_demo_fat32_image() -> alloc::vec::Vec<u8> {
 
 #[panic_handler]
 /// Panic handler : en mode test, signale l’échec à QEMU (port 0xF4).
-fn panic(_info: &PanicInfo) -> ! {
+fn panic(info: &PanicInfo) -> ! {
     #[cfg(test)]
     {
         exit_qemu(QemuExitCode::Failed);
+    }
+    #[cfg(not(test))]
+    {
+        // Assure que COM1 est configuré
+        serial_init();
+        // Met la couleur VGA sur rouge vif
+        crate::vga::vga_set_color(0x0C, 0x00);
+        vga_println!();
+        vga_println!("=== PANIC ===");
+        serial_println_args(core::format_args!("=== PANIC ==="));
+
+        {
+            let msg = info.message();
+            vga_println!("{}", msg);
+            serial_println_args(core::format_args!("{}", msg));
+        }
+
+        if let Some(loc) = info.location() {
+            vga_println!("at {}:{}:{}", loc.file(), loc.line(), loc.column());
+            serial_println_args(core::format_args!("at {}:{}:{}", loc.file(), loc.line(), loc.column()));
+        }
     }
     loop { core::hint::spin_loop(); }
 }
@@ -248,4 +286,61 @@ fn heap_alloc_works() {
     let mut v = alloc::vec::Vec::new();
     v.push(1);
     assert_eq!(v.len(), 1);
+}
+
+#[cfg(test)]
+fn build_test_fat32_image() -> alloc::vec::Vec<u8> {
+    use alloc::vec;
+    const S: usize = 512;
+    let mut disk = vec![0u8; S * 10];
+    {
+        let b = &mut disk[0..S];
+        b[11] = 0x00;
+        b[12] = 0x02;
+        b[13] = 0x01;
+        b[14] = 0x01;
+        b[15] = 0x00;
+        b[16] = 0x01;
+        b[36] = 0x01;
+        b[37] = 0x00;
+        b[38] = 0x00;
+        b[39] = 0x00;
+        b[44] = 0x02;
+        b[45] = 0x00;
+        b[46] = 0x00;
+        b[47] = 0x00;
+    }
+    {
+        let fat = &mut disk[S..S * 2];
+        let eoc = 0x0FFF_FFFFu32.to_le_bytes();
+        fat[2 * 4..2 * 4 + 4].copy_from_slice(&eoc);
+        fat[3 * 4..3 * 4 + 4].copy_from_slice(&eoc);
+        fat[4 * 4..4 * 4 + 4].copy_from_slice(&eoc);
+    }
+    {
+        let dir = &mut disk[2 * S..3 * S];
+        let mut hello = [0u8; 32];
+        hello[0..8].copy_from_slice(b"HELLO   ");
+        hello[8..11].copy_from_slice(b"TXT");
+        hello[11] = 0x20;
+        hello[26] = 0x03;
+        hello[27] = 0x00;
+        hello[28] = 5;
+        dir[0..32].copy_from_slice(&hello);
+        dir[64] = 0x00;
+    }
+    {
+        let off = 3 * S;
+        disk[off..off + 5].copy_from_slice(b"HELLO");
+    }
+    disk
+}
+
+#[cfg(test)]
+#[test_case]
+fn kernel_fat32_alloc_integration() {
+    let img = build_test_fat32_image();
+    let fs = fat32_parser::Fat32::new(&img).unwrap();
+    let content = fs.read_file_by_path("/HELLO.TXT").unwrap().unwrap();
+    assert_eq!(content, b"HELLO");
 }
