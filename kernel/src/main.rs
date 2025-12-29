@@ -99,11 +99,33 @@ fn serial_println_args(args: core::fmt::Arguments) {
     serial_write_byte(b'\n');
 }
 
+#[allow(dead_code)]
+fn serial_print_args(args: core::fmt::Arguments) {
+    use core::fmt::Write;
+    struct SW;
+    impl Write for SW {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            for &b in s.as_bytes() {
+                serial_write_byte(b);
+            }
+            Ok(())
+        }
+    }
+    let mut w = SW;
+    let _ = w.write_fmt(args);
+}
+
 #[macro_export]
 macro_rules! serial_println {
     () => { $crate::serial_print("") };
     ($fmt:expr) => { $crate::serial_println_args(core::format_args!($fmt)) };
     ($fmt:expr, $($arg:tt)*) => { $crate::serial_println_args(core::format_args!($fmt, $($arg)*)) };
+}
+
+#[macro_export]
+macro_rules! serial_print {
+    ($fmt:expr) => { $crate::serial_print_args(core::format_args!($fmt)) };
+    ($fmt:expr, $($arg:tt)*) => { $crate::serial_print_args(core::format_args!($fmt, $($arg)*)) };
 }
 
 /// Initialise l’allocateur global sur une zone statique alignée.
@@ -142,7 +164,7 @@ fn kernel_main(_boot_info: &'static BootInfo) -> ! {
         vga_println!();
         serial_println!("The Heap – kernel");
 
-        let img = build_demo_fat32_image();
+        let img = build_fat32_image();
         if let Ok(fs) = Fat32::new(&img) {
             if let Ok(entries) = fs.list_root() {
                 let mut s = alloc::string::String::from("ROOT: ");
@@ -178,9 +200,7 @@ fn kernel_main(_boot_info: &'static BootInfo) -> ! {
     }
 }
 
-#[cfg(not(test))]
-/// Construit une image FAT32 miniature en mémoire pour la démo.
-fn build_demo_fat32_image() -> alloc::vec::Vec<u8> {
+fn build_fat32_image() -> alloc::vec::Vec<u8> {
     use alloc::vec;
     const SECTOR_SIZE: usize = 512;
     const NUM_SECTORS: usize = 10;
@@ -299,58 +319,11 @@ fn heap_alloc_works() {
     assert_eq!(v.len(), 1);
 }
 
-#[cfg(test)]
-fn build_test_fat32_image() -> alloc::vec::Vec<u8> {
-    use alloc::vec;
-    const S: usize = 512;
-    let mut disk = vec![0u8; S * 10];
-    {
-        let b = &mut disk[0..S];
-        b[11] = 0x00;
-        b[12] = 0x02;
-        b[13] = 0x01;
-        b[14] = 0x01;
-        b[15] = 0x00;
-        b[16] = 0x01;
-        b[36] = 0x01;
-        b[37] = 0x00;
-        b[38] = 0x00;
-        b[39] = 0x00;
-        b[44] = 0x02;
-        b[45] = 0x00;
-        b[46] = 0x00;
-        b[47] = 0x00;
-    }
-    {
-        let fat = &mut disk[S..S * 2];
-        let eoc = 0x0FFF_FFFFu32.to_le_bytes();
-        fat[2 * 4..2 * 4 + 4].copy_from_slice(&eoc);
-        fat[3 * 4..3 * 4 + 4].copy_from_slice(&eoc);
-        fat[4 * 4..4 * 4 + 4].copy_from_slice(&eoc);
-    }
-    {
-        let dir = &mut disk[2 * S..3 * S];
-        let mut hello = [0u8; 32];
-        hello[0..8].copy_from_slice(b"HELLO   ");
-        hello[8..11].copy_from_slice(b"TXT");
-        hello[11] = 0x20;
-        hello[26] = 0x03;
-        hello[27] = 0x00;
-        hello[28] = 5;
-        dir[0..32].copy_from_slice(&hello);
-        dir[64] = 0x00;
-    }
-    {
-        let off = 3 * S;
-        disk[off..off + 5].copy_from_slice(b"HELLO");
-    }
-    disk
-}
 
 #[cfg(test)]
 #[test_case]
 fn kernel_fat32_alloc_integration() {
-    let img = build_test_fat32_image();
+    let img = build_fat32_image();
     let fs = fat32_parser::Fat32::new(&img).unwrap();
     let content = fs.read_file_by_path("/HELLO.TXT").unwrap().unwrap();
     assert_eq!(content, b"HELLO");
