@@ -159,10 +159,10 @@ fn kernel_main(_boot_info: &'static BootInfo) -> ! {
         crate::vga::vga_set_colors(crate::vga::Color::White, crate::vga::Color::Black);
         crate::vga::vga_clear();
         vga_println!("==============================");
-        vga_println!(" The Heap – kernel");
+        vga_println!(" The Heap - kernel");
         vga_println!("==============================");
         vga_println!();
-        serial_println!("The Heap – kernel");
+        serial_println!("The Heap - kernel");
 
         let mut img = build_fat32_image();
         if let Ok(mut rw) = Fat32Mut::new(&mut img) {
@@ -188,7 +188,7 @@ fn kernel_main(_boot_info: &'static BootInfo) -> ! {
             {
                 let ro = rw.as_read();
                 if let Ok(entries) = ro.list_root() {
-                    let mut s = alloc::string::String::from("ROOT (après écriture): ");
+                    let mut s = alloc::string::String::from("ROOT (apres ecriture): ");
                     for (i, e) in entries.iter().enumerate() {
                         if i > 0 { s.push(' '); }
                         s.push_str(&e.name);
