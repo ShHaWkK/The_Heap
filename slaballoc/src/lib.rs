@@ -16,7 +16,7 @@ use core::cell::UnsafeCell;
 use core::hint::spin_loop as cpu_relax;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-/// Spinlock simple (non équitable).
+/// Spinlock minimal (non équitable) pour protéger l’allocator.
 struct SpinLock<T> {
     locked: AtomicBool,
     inner: UnsafeCell<T>,
@@ -62,17 +62,54 @@ impl<'a, T> Drop for SpinLockGuard<'a, T> {
     fn drop(&mut self) { self.lock.locked.store(false, Ordering::Release); }
 }
 
-/// Wrapper thread-safe de l'allocator par slabs.
+/// Wrapper thread‑safe autour de `SlabAllocator` pour l’usage global.
+///
+/// Usage typique : installer comme `#[global_allocator]` dans un noyau ou un binaire.
+///
+/// Exemples :
+/// ```rust,no_run
+/// use slaballoc::LockedAlloc;
+/// use core::alloc::Layout;
+/// use core::alloc::GlobalAlloc;
+///
+/// static GLOBAL_ALLOC: LockedAlloc = LockedAlloc::new();
+///
+/// fn demo() {
+///     let mut heap = vec![0u8; 64 * 1024];
+///     unsafe { GLOBAL_ALLOC.init(heap.as_mut_ptr() as usize, heap.len()) };
+///     let l = Layout::from_size_align(32, 8).unwrap();
+///     let p = unsafe { GLOBAL_ALLOC.alloc(l) };
+///     assert!(!p.is_null());
+///     unsafe { GLOBAL_ALLOC.dealloc(p, l) };
+/// }
+/// ```
 pub struct LockedAlloc(SpinLock<SlabAllocator>);
 
 impl LockedAlloc {
     /// Construit un allocator verrouillé prêt à être initialisé.
+    ///
+    /// Paramètres : aucun.
+    ///
+    /// Retour : instance par défaut.
+    ///
+    /// Panics : aucune.
     pub const fn new() -> Self { Self(SpinLock::new(SlabAllocator::new())) }
 
-    /// # Safety
-    /// `heap_start..heap_start+heap_size` doit désigner une région valide, unique,
-    /// accessible en lecture/écriture, initialisée avant toute allocation.
-    /// Ne pas appeler deux fois. Le `heap_start` doit être correctement aligné.
+    /// Initialise l’allocator sur une région mémoire brute.
+    ///
+    /// Paramètres :
+    /// - `heap_start` : adresse de début de la région.
+    /// - `heap_size` : taille de la région en octets.
+    ///
+    /// Retour : `()`.
+    ///
+    /// Erreurs : non (contrats `unsafe`).
+    ///
+    /// Panics : aucune.
+    ///
+    /// Safety :
+    /// - région valide, exclusive, lisible/écrivable,
+    /// - appel unique, `heap_start` correctement aligné (≥16 recommandé).
     pub unsafe fn init(&self, heap_start: usize, heap_size: usize) {
         let mut g = self.0.lock();
         g.init(heap_start, heap_size);

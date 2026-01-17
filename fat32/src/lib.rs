@@ -80,10 +80,27 @@ pub struct Fat32Mut<'a> {
 }
 
 impl<'a> Fat32<'a> {
-    /// Construit une vue FAT32 depuis un dump en mémoire (lecture seule).
+    /// Construit une vue FAT32 en lecture seule à partir d’un buffer mémoire.
     ///
-    /// On lit un BPB minimal et on récupère les paramètres indispensables
-    /// pour calculer les offsets (FAT, data, clusters).
+    /// Paramètres :
+    /// - `disk` : slice immuable représentant l’image FAT32 (secteur 0 = BPB).
+    ///
+    /// Retour : `Result<Self, FatError>` avec une vue prête pour le listage et la lecture.
+    ///
+    /// Erreurs :
+    /// - `BufferTooSmall` si le buffer ne couvre pas les champs requis du BPB.
+    /// - `NotFat32` si les champs du BPB ne correspondent pas à un volume FAT32.
+    ///
+    /// Panics : aucune.
+    ///
+    /// Exemples :
+    /// ```rust,no_run
+    /// # use fat32_parser::{Fat32, FatError};
+    /// # let disk = vec![0u8; 10 * 512];
+    /// let fs = Fat32::new(&disk)?;
+    /// let entries = fs.list_root()?;
+    /// # Ok::<(), FatError>(())
+    /// ```
     pub fn new(disk: &'a [u8]) -> Result<Self, FatError> {
         let p = parse_bpb(disk)?;
         Ok(Self {
@@ -98,14 +115,49 @@ impl<'a> Fat32<'a> {
     }
 
     /// Liste le contenu du répertoire racine.
+    ///
+    /// Paramètres : aucun.
+    ///
+    /// Retour : `Vec<DirEntry>` contenant fichiers et sous‑répertoires.
+    ///
+    /// Erreurs : `OutOfBounds`, `InvalidCluster` si l’image est incohérente.
+    ///
+    /// Panics : aucune.
+    ///
+    /// Exemples :
+    /// ```rust,no_run
+    /// # use fat32_parser::{Fat32, FatError};
+    /// # let disk = vec![0u8; 10 * 512];
+    /// let fs = Fat32::new(&disk)?;
+    /// let root = fs.list_root()?;
+    /// # Ok::<(), FatError>(())
+    /// ```
     pub fn list_root(&self) -> Result<Vec<DirEntry>, FatError> {
         self.list_dir_cluster(self.root_cluster)
     }
 
-    /// Liste un répertoire à partir d’un chemin absolu (ex: `"/DIR"`).
+    /// Liste un répertoire à partir d’un chemin absolu (ex : `"/DIR"`).
     ///
-    /// - `"/"` liste la racine
-    /// - si le chemin cible un fichier, on retourne `NotADirectory`
+    /// Paramètres :
+    /// - `path` : chemin absolu; `"/"` liste la racine.
+    ///
+    /// Retour : `Vec<DirEntry>` si `path` cible un répertoire.
+    ///
+    /// Erreurs :
+    /// - `PathNotFound` si le chemin ne correspond à rien.
+    /// - `NotADirectory` si `path` cible un fichier.
+    /// - `OutOfBounds`/`InvalidCluster` si l’image est incohérente.
+    ///
+    /// Panics : aucune.
+    ///
+    /// Exemples :
+    /// ```rust,no_run
+    /// # use fat32_parser::{Fat32, FatError};
+    /// # let disk = vec![0u8; 10 * 512];
+    /// let fs = Fat32::new(&disk)?;
+    /// let entries = fs.list_dir_path("/DIR")?;
+    /// # Ok::<(), FatError>(())
+    /// ```
     pub fn list_dir_path(&self, path: &str) -> Result<Vec<DirEntry>, FatError> {
         if path == "/" {
             return self.list_root();
@@ -121,10 +173,29 @@ impl<'a> Fat32<'a> {
 
     /// Lit un fichier à partir de son chemin absolu.
     ///
-    /// Retourne:
-    /// - `Ok(Some(bytes))` si le fichier existe
-    /// - `Ok(None)` si le chemin n’existe pas
-    /// - `Err(NotAFile)` si le chemin pointe vers un répertoire
+    /// Paramètres :
+    /// - `path` : chemin absolu d’un fichier (noms courts 8.3).
+    ///
+    /// Retour :
+    /// - `Ok(Some(bytes))` si le fichier existe.
+    /// - `Ok(None)` si le chemin n’existe pas.
+    ///
+    /// Erreurs :
+    /// - `NotAFile` si `path` cible un répertoire.
+    /// - `OutOfBounds`/`InvalidCluster` si la chaîne FAT est invalide.
+    ///
+    /// Panics : aucune.
+    ///
+    /// Exemples :
+    /// ```rust,no_run
+    /// # use fat32_parser::{Fat32, FatError};
+    /// # let disk = vec![0u8; 10 * 512];
+    /// let fs = Fat32::new(&disk)?;
+    /// if let Some(data) = fs.read_file_by_path("/HELLO.TXT")? {
+    ///     assert!(!data.is_empty());
+    /// }
+    /// # Ok::<(), FatError>(())
+    /// ```
     pub fn read_file_by_path(&self, path: &str) -> Result<Option<Vec<u8>>, FatError> {
         let entry = match self.open_path(path)? {
             Some(e) => e,
@@ -140,9 +211,27 @@ impl<'a> Fat32<'a> {
 
     /// Résout un chemin absolu en une entrée de répertoire.
     ///
-    /// - Le chemin doit commencer par `/`
-    /// - la recherche est case-insensitive sur les noms courts (8.3),
-    ///   parce qu’on normalise en majuscule
+    /// Paramètres :
+    /// - `path` : doit commencer par `/`.
+    ///
+    /// Retour : `Ok(Some(DirEntry))` si trouvé, `Ok(None)` sinon.
+    ///
+    /// Erreurs :
+    /// - `Other` si le chemin ne commence pas par `/`.
+    ///
+    /// Panics : aucune.
+    ///
+    /// Notes : recherche case‑insensitive pour les noms courts (8.3).
+    ///
+    /// Exemples :
+    /// ```rust,no_run
+    /// # use fat32_parser::{Fat32, FatError};
+    /// # let disk = vec![0u8; 10 * 512];
+    /// let fs = Fat32::new(&disk)?;
+    /// let opt = fs.open_path("/DIR/NOTE.TXT")?;
+    /// assert!(opt.is_none() || opt.as_ref().unwrap().is_file());
+    /// # Ok::<(), FatError>(())
+    /// ```
     pub fn open_path(&self, path: &str) -> Result<Option<DirEntry>, FatError> {
         if !path.starts_with('/') {
             return Err(FatError::Other);
@@ -178,8 +267,28 @@ impl<'a> Fat32<'a> {
 
     /// Lit un fichier à partir d’une entrée (`DirEntry`).
     ///
-    /// On suit la chaîne de clusters dans la FAT, puis on reconstruit les octets
-    /// jusqu’à `entry.size`.
+    /// Paramètres :
+    /// - `entry` : entrée de répertoire représentant un fichier.
+    ///
+    /// Retour : contenu du fichier (`Vec<u8>`).
+    ///
+    /// Erreurs :
+    /// - `NotAFile` si `entry` est un répertoire.
+    /// - `OutOfBounds`/`InvalidCluster` si la chaîne FAT est invalide.
+    ///
+    /// Panics : aucune.
+    ///
+    /// Exemples :
+    /// ```rust,no_run
+    /// # use fat32_parser::{Fat32, FatError};
+    /// # let disk = vec![0u8; 10 * 512];
+    /// let fs = Fat32::new(&disk)?;
+    /// if let Some(e) = fs.open_path("/HELLO.TXT")? {
+    ///     let bytes = fs.read_file(&e)?;
+    ///     assert!(!bytes.is_empty());
+    /// }
+    /// # Ok::<(), FatError>(())
+    /// ```
     pub fn read_file(&self, entry: &DirEntry) -> Result<Vec<u8>, FatError> {
         if !entry.is_file() {
             return Err(FatError::NotAFile);
@@ -332,7 +441,27 @@ impl<'a> Fat32<'a> {
 }
 
 impl<'a> Fat32Mut<'a> {
-    /// Construit une vue FAT32 depuis un dump en mémoire (lecture/écriture).
+    /// Construit une vue FAT32 lecture/écriture sur un buffer mutable.
+    ///
+    /// Paramètres :
+    /// - `disk` : slice mutable représentant l’image FAT32.
+    ///
+    /// Retour : `Result<Self, FatError>` avec une vue prête pour l’écriture simple.
+    ///
+    /// Erreurs :
+    /// - `BufferTooSmall` si le buffer ne couvre pas les champs requis du BPB.
+    /// - `NotFat32` si les champs du BPB ne correspondent pas à un volume FAT32.
+    ///
+    /// Panics : aucune.
+    ///
+    /// Exemples :
+    /// ```rust,no_run
+    /// # use fat32_parser::{Fat32Mut, FatError};
+    /// # let mut disk = vec![0u8; 10 * 512];
+    /// let mut rw = Fat32Mut::new(&mut disk)?;
+    /// rw.write_file_by_path("/NEW.TXT", b"DATA")?;
+    /// # Ok::<(), FatError>(())
+    /// ```
     pub fn new(disk: &'a mut [u8]) -> Result<Self, FatError> {
         let p = parse_bpb(&*disk)?;
         Ok(Self {
@@ -348,7 +477,17 @@ impl<'a> Fat32Mut<'a> {
 
     /// Donne une vue lecture seule sur le même buffer.
     ///
-    /// Ça permet de réutiliser `open_path` / `list_root` sans dupliquer la logique.
+    /// Utile pour réutiliser `open_path` / `list_root` sans dupliquer la logique.
+    ///
+    /// Exemples :
+    /// ```rust,no_run
+    /// # use fat32_parser::{Fat32Mut, FatError};
+    /// # let mut disk = vec![0u8; 10 * 512];
+    /// let mut rw = Fat32Mut::new(&mut disk)?;
+    /// let ro = rw.as_read();
+    /// let _ = ro.list_root();
+    /// # Ok::<(), FatError>(())
+    /// ```
     pub fn as_read(&self) -> Fat32<'_> {
         Fat32 {
             disk: &*self.disk,
@@ -363,15 +502,33 @@ impl<'a> Fat32Mut<'a> {
 
     /// Écrit un fichier (création ou overwrite) dans l’image FAT32.
     ///
-    /// Règles simples (volontaires) :
-    /// - `path` doit être absolu et viser un fichier (pas un répertoire)
-    /// - nom court 8.3 uniquement (ex: `HELLO.TXT`, `A.TXT`, `FILE`)
-    /// - le répertoire parent doit exister
+    /// Paramètres :
+    /// - `path` : chemin absolu du fichier (noms courts 8.3).
+    /// - `content` : octets à écrire (fichier vide si `content.is_empty()`).
     ///
-    /// Comportement :
-    /// - si le fichier existe, on libère son ancienne chaîne de clusters
-    /// - puis on alloue une nouvelle chaîne, on écrit les données, et on met à jour l’entrée
-    /// - si `content` est vide, on crée un fichier vide (cluster = 0)
+    /// Retour : `Result<(), FatError>`.
+    ///
+    /// Erreurs :
+    /// - `Other` si `path` n’est pas absolu ou vaut `"/"`.
+    /// - `NotADirectory` si le parent n’est pas un répertoire.
+    /// - `PathNotFound` si le parent n’existe pas.
+    /// - `NotAFile` si une entrée existante est un répertoire.
+    /// - `NoSpaceLeft` si la FAT ne contient pas assez de clusters libres.
+    /// - `OutOfBounds`/`InvalidCluster` si l’image est incohérente.
+    ///
+    /// Panics : aucune.
+    ///
+    /// Exemples :
+    /// ```rust,no_run
+    /// # use fat32_parser::{Fat32Mut, FatError};
+    /// # let mut disk = vec![0u8; 10 * 512];
+    /// let mut rw = Fat32Mut::new(&mut disk)?;
+    /// rw.write_file_by_path("/LOG.TXT", b"ABC")?;
+    /// let ro = rw.as_read();
+    /// let content = ro.read_file_by_path("/LOG.TXT")?.unwrap();
+    /// assert_eq!(content, b"ABC");
+    /// # Ok::<(), FatError>(())
+    /// ```
     pub fn write_file_by_path(&mut self, path: &str, content: &[u8]) -> Result<(), FatError> {
         if !path.starts_with('/') || path == "/" {
             return Err(FatError::Other);

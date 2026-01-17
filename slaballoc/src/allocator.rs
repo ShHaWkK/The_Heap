@@ -3,7 +3,7 @@ use core::ptr::NonNull;
 
 use crate::util::{align_up, is_power_of_two};
 
-/// Taille d'un chunk interne (granularité de découpe).
+/// Taille d’un chunk interne (granularité de découpe).
 pub const CHUNK_SIZE: usize = 4096;
 
 /// Classes de tailles (slabs) pour les petites allocations.
@@ -33,7 +33,21 @@ impl Cache {
     }
 }
 
-/// État interne de l'allocator (protégé par lock côté wrapper).
+/// État interne de l’allocator par slabs (protégé côté `LockedAlloc`).
+///
+/// Exemples :
+/// ```rust,no_run
+/// use slaballoc::SlabAllocator;
+/// use core::alloc::Layout;
+///
+/// let mut buf = vec![0u8; 64 * 1024];
+/// let mut alloc = SlabAllocator::new();
+/// unsafe { alloc.init(buf.as_mut_ptr() as usize, buf.len()) };
+/// let l = Layout::from_size_align(64, 8).unwrap();
+/// let p = alloc.alloc(l);
+/// assert!(!p.is_null());
+/// unsafe { alloc.dealloc(p, l) };
+/// ```
 pub struct SlabAllocator {
     heap_start: usize,
     heap_end: usize,
@@ -56,12 +70,21 @@ impl SlabAllocator {
         }
     }
 
-    /// Initialise l'allocator avec une région mémoire `[heap_start, heap_start + heap_size)`.
+    /// Initialise l’allocator sur une région brute `[heap_start, heap_start + heap_size)`.
     ///
-    /// # Safety
-    /// - `heap_start..heap_start+heap_size` doit être une région valide, accessible en écriture.
-    /// - Cette fonction doit être appelée une seule fois (avant toute alloc).
-    /// - `heap_start` doit être aligné au moins à 16 (recommandé).
+    /// Paramètres :
+    /// - `heap_start` : adresse de début de la région.
+    /// - `heap_size` : taille de la région.
+    ///
+    /// Retour : `()`.
+    ///
+    /// Erreurs : non (contrats `unsafe`).
+    ///
+    /// Panics : aucune.
+    ///
+    /// Safety :
+    /// - région exclusive, valide, écrivable,
+    /// - appel unique, `heap_start` ≥ align 16.
     pub unsafe fn init(&mut self, heap_start: usize, heap_size: usize) {
         self.heap_start = heap_start;
         self.heap_end = heap_start + heap_size;
@@ -135,9 +158,20 @@ impl SlabAllocator {
         true
     }
 
-    /// # Safety
-    /// Retourne un pointeur brut valide ou nul. Les classes petites utilisent la freelist,
-    /// les grosses tailles consomment la région bump sans recyclage.
+    /// Alloue une région brute conforme à `layout`.
+    ///
+    /// Paramètres :
+    /// - `layout` : taille + alignement demandé.
+    ///
+    /// Retour : pointeur brut ou `null_mut()` si échec.
+    ///
+    /// Erreurs : non (code d’erreur via pointeur nul).
+    ///
+    /// Panics : aucune.
+    ///
+    /// Notes :
+    /// - petites tailles : freelist par classe,
+    /// - tailles > 4096 : bump allocator (pas de recyclage en V1).
     pub fn alloc(&mut self, layout: Layout) -> *mut u8 {
         if !self.initialized {
             return core::ptr::null_mut();
@@ -165,9 +199,22 @@ impl SlabAllocator {
         }
     }
 
-    /// # Safety
-    /// `ptr` doit provenir d’un `alloc` avec ce `layout`. Pas de double free, pas de mélange
-    /// de classes de taille. Les grosses tailles ne sont pas recyclées en V1.
+    /// Libère un bloc alloué précédemment avec le même `layout`.
+    ///
+    /// Paramètres :
+    /// - `ptr` : pointeur brut vers le bloc.
+    /// - `layout` : layout identique à celui passé à `alloc`.
+    ///
+    /// Retour : `()`.
+    ///
+    /// Erreurs : non (contrats `unsafe`).
+    ///
+    /// Panics : aucune.
+    ///
+    /// Safety :
+    /// - `ptr` doit provenir d’un `alloc` avec ce `layout`,
+    /// - pas de double free, pas de mélange de classes.
+    /// - les grosses tailles ne sont pas recyclées en V1.
     pub fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
         if ptr.is_null() || !self.initialized {
             return;

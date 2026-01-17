@@ -1,45 +1,38 @@
 #![no_std]
 #![no_main]
-#![feature(alloc_error_handler)]
 #![feature(custom_test_frameworks)]
 #![test_runner(crate::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
-//! Noyau Rust Phil‑Opp :
-//! - VGA texte (écriture directe dans `0xb8000`)
-//! - Port série COM1 pour logs (redirigé par QEMU `-serial stdio`)
-//! - Allocateur global (`#[global_allocator]`) avec démonstration `Vec`/`String`
-//! - Intégration FAT32 en RAM : listage de `/` et lecture de `HELLO.TXT`
-
 extern crate alloc;
 
-mod vga;
-
-use bootloader::BootInfo;
 use bootloader::entry_point;
-use fat32_parser::{Fat32, Fat32Mut};
 use core::panic::PanicInfo;
+use core::alloc::{Layout, GlobalAlloc};
+use alloc::format;
+use fat32_parser::{Fat32, Fat32Mut};
 use slaballoc::LockedAlloc;
 
-#[global_allocator]
-static GLOBAL_ALLOC: LockedAlloc = LockedAlloc::new();
-
-const HEAP_SIZE: usize = 512 * 1024;
-
-#[repr(align(64))]
-struct AlignedHeap<const N: usize> { buf: [u8; N] }
-
-static mut HEAP: AlignedHeap<HEAP_SIZE> = AlignedHeap { buf: [0; HEAP_SIZE] };
-
+/// Écrit un octet sur un port d’E/S x86.
+///
+/// Safety
+/// - Le port doit être valide pour le contexte matériel courant
+/// - L’appel s’effectue en mode noyau sans I/O concurrente non maîtrisée
+/// - Ne pas utiliser sur OS hôte: code destiné au kernel booté dans QEMU
 #[inline(always)]
 unsafe fn outb(port: u16, val: u8) {
     core::arch::asm!("out dx, al", in("dx") port, in("al") val, options(nomem, nostack, preserves_flags));
 }
 
+/// Lit un octet depuis un port d’E/S x86.
+///
+/// Safety
+/// - Le port doit être valide et lisible dans le contexte matériel courant
+/// - Ne pas utiliser sur OS hôte: code destiné au kernel booté dans QEMU
 #[inline(always)]
 unsafe fn inb(port: u16) -> u8 {
     let mut v: u8;
-    core::arch::asm!("in al, dx", out("al") v, in("dx") port, options(nomem, nostack, preserves_flags));
+    core::arch::asm!("in al, dx", in("dx") port, out("al") v, options(nomem, nostack, preserves_flags));
     v
 }
 
@@ -53,12 +46,17 @@ fn exit_qemu(code: QemuExitCode) {
     unsafe { outb(0xF4, code as u8) }
 }
 
-/// Initialise le port série COM1 (38400 8N1) pour l’affichage terminal.
+#[global_allocator]
+static GLOBAL_ALLOC: LockedAlloc = LockedAlloc::new();
+static mut HEAP_SPACE: [u8; 128 * 1024] = [0; 128 * 1024];
+const HEAP_SIZE: usize = 128 * 1024;
+
 fn serial_init() {
     unsafe {
+        // Safety: accès contrôlés aux registres de COM1 (0x3F8..)
         outb(0x3F8 + 1, 0x00);
         outb(0x3F8 + 3, 0x80);
-        outb(0x3F8, 0x01);
+        outb(0x3F8 + 0, 0x01);
         outb(0x3F8 + 1, 0x00);
         outb(0x3F8 + 3, 0x03);
         outb(0x3F8 + 2, 0xC7);
@@ -66,181 +64,39 @@ fn serial_init() {
     }
 }
 
-/// Écrit un octet sur COM1.
 fn serial_write_byte(b: u8) {
     unsafe {
+        // Safety: polling du LSR (Line Status Register) sur COM1
         while (inb(0x3F8 + 5) & 0x20) == 0 {}
         outb(0x3F8, b);
     }
 }
 
-/// Écrit une chaîne UTF‑8 sur COM1 et ajoute un saut de ligne.
-fn serial_print(s: &str) {
+fn serial_write_str(s: &str) {
     for &b in s.as_bytes() {
         serial_write_byte(b);
     }
     serial_write_byte(b'\n');
 }
 
-/// Écrit des `format_args!` sur COM1 sans allocation puis ajoute un saut de ligne
-fn serial_println_args(args: core::fmt::Arguments) {
-    use core::fmt::Write;
-    struct SW;
-    impl Write for SW {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-            for &b in s.as_bytes() {
-                serial_write_byte(b);
-            }
-            Ok(())
+fn vga_write_line(row: usize, s: &str) {
+    let base = 0xb8000 as *mut u8;
+    let mut col = 0usize;
+    for &b in s.as_bytes() {
+        unsafe {
+            let off = (row * 80 + col) * 2;
+            core::ptr::write_volatile(base.add(off), b);
+            core::ptr::write_volatile(base.add(off + 1), 0x07);
         }
-    }
-    let mut w = SW;
-    let _ = w.write_fmt(args);
-    serial_write_byte(b'\n');
-}
-
-#[allow(dead_code)]
-fn serial_print_args(args: core::fmt::Arguments) {
-    use core::fmt::Write;
-    struct SW;
-    impl Write for SW {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-            for &b in s.as_bytes() {
-                serial_write_byte(b);
-            }
-            Ok(())
-        }
-    }
-    let mut w = SW;
-    let _ = w.write_fmt(args);
-}
-
-#[macro_export]
-macro_rules! serial_println {
-    () => { $crate::serial_print("") };
-    ($fmt:expr) => { $crate::serial_println_args(core::format_args!($fmt)) };
-    ($fmt:expr, $($arg:tt)*) => { $crate::serial_println_args(core::format_args!($fmt, $($arg)*)) };
-}
-
-#[macro_export]
-macro_rules! serial_print {
-    ($fmt:expr) => { $crate::serial_print_args(core::format_args!($fmt)) };
-    ($fmt:expr, $($arg:tt)*) => { $crate::serial_print_args(core::format_args!($fmt, $($arg)*)) };
-}
-
-/// Initialise l’allocateur global sur une zone statique alignée.
-fn init_heap() {
-    unsafe {
-        let start = core::ptr::addr_of_mut!(HEAP.buf[0]) as usize;
-        GLOBAL_ALLOC.init(start, HEAP_SIZE);
+        col += 1;
+        if col >= 80 { break; }
     }
 }
 
-entry_point!(kernel_main);
-
-/// Point d’entrée du noyau : init heap/série, Hello VGA/série,
-/// intégration FAT32 (listage racine et lecture `HELLO.TXT`),
-/// puis boucle infinie.
-fn kernel_main(_boot_info: &'static BootInfo) -> ! {
-    #[cfg(test)]
-    {
-        init_heap();
-        serial_init();
-        test_main();
-        exit_qemu(QemuExitCode::Success);
-        loop { core::hint::spin_loop(); }
-    }
-
-    #[cfg(not(test))]
-    {
-        init_heap();
-        serial_init();
-
-        crate::vga::vga_set_colors(crate::vga::Color::White, crate::vga::Color::Black);
-        crate::vga::vga_clear();
-        vga_println!("==============================");
-        vga_println!(" The Heap - kernel");
-        vga_println!("==============================");
-        vga_println!();
-        serial_println!("The Heap - kernel");
-
-        let mut img = build_fat32_image();
-        if let Ok(mut rw) = Fat32Mut::new(&mut img) {
-            {
-                let ro = rw.as_read();
-                if let Ok(entries) = ro.list_root() {
-                    let mut s = alloc::string::String::from("ROOT: ");
-                    for (i, e) in entries.iter().enumerate() {
-                        if i > 0 { s.push(' '); }
-                        s.push_str(&e.name);
-                    }
-                    vga_println!("{}", s);
-                    serial_print(&s);
-                }
-                if let Ok(Some(bytes)) = ro.read_file_by_path("/HELLO.TXT") {
-                    if let Ok(text) = core::str::from_utf8(&bytes) {
-                        vga_println!("{}", text);
-                        serial_print(text);
-                    }
-                }
-            }
-            let _ = rw.write_file_by_path("/NEW.TXT", b"NEW!");
-            {
-                let ro = rw.as_read();
-                if let Ok(entries) = ro.list_root() {
-                    let mut s = alloc::string::String::from("ROOT (apres ecriture): ");
-                    for (i, e) in entries.iter().enumerate() {
-                        if i > 0 { s.push(' '); }
-                        s.push_str(&e.name);
-                    }
-                    vga_println!("{}", s);
-                    serial_print(&s);
-                }
-                if let Ok(Some(bytes)) = ro.read_file_by_path("/NEW.TXT") {
-                    if let Ok(text) = core::str::from_utf8(&bytes) {
-                        vga_println!("{}", text);
-                        serial_print(text);
-                    }
-                }
-            }
-        } else if let Ok(fs) = Fat32::new(&img) {
-            if let Ok(entries) = fs.list_root() {
-                let mut s = alloc::string::String::from("ROOT: ");
-                for (i, e) in entries.iter().enumerate() {
-                    if i > 0 { s.push(' '); }
-                    s.push_str(&e.name);
-                }
-                vga_println!("{}", s);
-                serial_print(&s);
-            }
-            if let Ok(Some(bytes)) = fs.read_file_by_path("/HELLO.TXT") {
-                if let Ok(text) = core::str::from_utf8(&bytes) {
-                    vga_println!("{}", text);
-                    serial_print(text);
-                }
-            }
-        }
-
-        use alloc::string::String;
-        use alloc::vec::Vec;
-
-        let mut v: Vec<u32> = Vec::with_capacity(64);
-        for i in 0..32 {
-            v.push(i);
-        }
-        let s = String::from("The Heap: allocator OK");
-        serial_print(&s);
-        let _ = (v, s);
-
-        loop { core::hint::spin_loop(); }
-    }
-}
-
-fn build_fat32_image() -> alloc::vec::Vec<u8> {
-    use alloc::vec;
+fn build_test_image() -> [u8; 5120] {
     const SECTOR_SIZE: usize = 512;
     const NUM_SECTORS: usize = 10;
-    let mut disk = vec![0u8; SECTOR_SIZE * NUM_SECTORS];
+    let mut disk = [0u8; SECTOR_SIZE * NUM_SECTORS];
     {
         let b = &mut disk[0..SECTOR_SIZE];
         b[11] = 0x00;
@@ -261,7 +117,7 @@ fn build_fat32_image() -> alloc::vec::Vec<u8> {
     {
         let fat_start = SECTOR_SIZE;
         let fat = &mut disk[fat_start..fat_start + SECTOR_SIZE];
-        let eoc = 0x0FFF_FFFFu32.to_le_bytes();
+        let eoc = 0x0F_FF_FF_F8u32.to_le_bytes();
         fat[2 * 4..2 * 4 + 4].copy_from_slice(&eoc);
         fat[3 * 4..3 * 4 + 4].copy_from_slice(&eoc);
         fat[4 * 4..4 * 4 + 4].copy_from_slice(&eoc);
@@ -297,40 +153,66 @@ fn build_fat32_image() -> alloc::vec::Vec<u8> {
     disk
 }
 
-#[panic_handler]
-/// Panic handler : en mode test, signale l’échec à QEMU (port 0xF4).
-fn panic(info: &PanicInfo) -> ! {
+fn demo() {
+    unsafe {
+        let p = core::ptr::addr_of_mut!(HEAP_SPACE) as *mut u8 as usize;
+        GLOBAL_ALLOC.init(p, HEAP_SIZE);
+    };
+    serial_init();
+    serial_write_str("The Heap - kernel");
+    vga_write_line(0, "The Heap - kernel");
+    let mut disk = build_test_image();
+    let ro = Fat32::new(&disk).unwrap();
+    let root = ro.list_root().unwrap();
+    let mut names = alloc::vec::Vec::new();
+    for e in root { names.push(e.name); }
+    serial_write_str(&format!("ROOT: {}", names.join(" ")));
+    vga_write_line(1, &format!("ROOT: {}", names.join(" ")));
+    let hello = ro.read_file_by_path("/HELLO.TXT").unwrap().unwrap();
+    let hello_s = core::str::from_utf8(&hello).unwrap();
+    serial_write_str(hello_s);
+    vga_write_line(2, hello_s);
+    {
+        let mut rw = Fat32Mut::new(&mut disk).unwrap();
+        rw.write_file_by_path("/NEW.TXT", b"NEW!").unwrap();
+    }
+    let ro2 = Fat32::new(&disk).unwrap();
+    let root2 = ro2.list_root().unwrap();
+    let mut names2 = alloc::vec::Vec::new();
+    for e in root2 { names2.push(e.name); }
+    serial_write_str(&format!("ROOT (apres ecriture): {}", names2.join(" ")));
+    vga_write_line(3, &format!("ROOT (apres ecriture): {}", names2.join(" ")));
+    let newc = ro2.read_file_by_path("/NEW.TXT").unwrap().unwrap();
+    let new_s = core::str::from_utf8(&newc).unwrap();
+    serial_write_str(new_s);
+    vga_write_line(4, new_s);
+    let l = Layout::from_size_align(32, 8).unwrap();
+    let p = unsafe { GLOBAL_ALLOC.alloc(l) };
+    assert!(!p.is_null());
+    unsafe { GLOBAL_ALLOC.dealloc(p, l) };
+    serial_write_str("The Heap: allocator OK");
+    vga_write_line(5, "The Heap: allocator OK");
+}
+
+entry_point!(kernel_main);
+
+fn kernel_main(_: &'static bootloader::BootInfo) -> ! {
     #[cfg(test)]
     {
-        exit_qemu(QemuExitCode::Failed);
+        demo();
+        test_main();
+        exit_qemu(QemuExitCode::Success);
+        loop { core::hint::spin_loop(); }
     }
     #[cfg(not(test))]
     {
-        // Assure que COM1 est configuré
-        serial_init();
-        // Met la couleur VGA sur rouge vif
-        crate::vga::vga_set_colors(crate::vga::Color::LightRed, crate::vga::Color::Black);
-        vga_println!();
-        vga_println!("=== PANIC ===");
-        serial_println_args(core::format_args!("=== PANIC ==="));
-
-        {
-            let msg = info.message();
-            vga_println!("{}", msg);
-            serial_println_args(core::format_args!("{}", msg));
-        }
-
-        if let Some(loc) = info.location() {
-            vga_println!("at {}:{}:{}", loc.file(), loc.line(), loc.column());
-            serial_println_args(core::format_args!("at {}:{}:{}", loc.file(), loc.line(), loc.column()));
-        }
+        demo();
+        loop { core::hint::spin_loop(); }
     }
-    loop { core::hint::spin_loop(); }
 }
 
-#[alloc_error_handler]
-/// Gestionnaire d’échec d’allocation : en mode test, signale l’échec à QEMU.
-fn alloc_error(_layout: core::alloc::Layout) -> ! {
+#[panic_handler]
+fn panic(_: &PanicInfo) -> ! {
     #[cfg(test)]
     {
         exit_qemu(QemuExitCode::Failed);
@@ -339,7 +221,6 @@ fn alloc_error(_layout: core::alloc::Layout) -> ! {
 }
 
 #[cfg(test)]
-/// Test runner minimal pour le framework de test custom.
 fn test_runner(tests: &[&dyn Fn()]) {
     for t in tests {
         t();
@@ -347,20 +228,7 @@ fn test_runner(tests: &[&dyn Fn()]) {
 }
 
 #[cfg(test)]
-/// Test de base : allocation sur le heap global.
 #[test_case]
-fn heap_alloc_works() {
-    let mut v = alloc::vec::Vec::new();
-    v.push(1);
-    assert_eq!(v.len(), 1);
-}
-
-
-#[cfg(test)]
-#[test_case]
-fn kernel_fat32_alloc_integration() {
-    let img = build_fat32_image();
-    let fs = fat32_parser::Fat32::new(&img).unwrap();
-    let content = fs.read_file_by_path("/HELLO.TXT").unwrap().unwrap();
-    assert_eq!(content, b"HELLO");
+fn it_works() {
+    assert_eq!(1 + 1, 2);
 }

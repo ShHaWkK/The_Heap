@@ -1,8 +1,9 @@
-[alias]
-kbuild = "build -p kernel --target x86_64-the_heap.json -Z build-std=core,alloc,compiler_builtins -Z build-std-features=compiler-builtins-mem"
-krun   = "run   -p kernel --target x86_64-the_heap.json -Z build-std=core,alloc,compiler_builtins -Z build-std-features=compiler-builtins-mem"
-kboot  = "bootimage -p kernel --target x86_64-the_heap.json -Z build-std=core,alloc,compiler_builtins -Z build-std-features=compiler-builtins-mem"
+# .cargo/config.toml
 
-[target.x86_64-the_heap]
+[alias]
+ktest = "test -Z panic-abort-tests -p kernel --target x86_64-the_heap.json -Z build-std=core,compiler_builtins,alloc,panic_abort -Z build-std-features=compiler-builtins-mem"
+krun = "run -p kernel --target x86_64-the_heap.json -Z build-std=core,compiler_builtins,alloc,panic_abort -Z build-std-features=compiler-builtins-mem"
+kbuild = "bootimage --manifest-path kernel/Cargo.toml --target x86_64-the_heap.json -Z build-std=core,compiler_builtins,alloc,panic_abort -Z build-std-features=compiler-builtins-mem"
+
+[target.'cfg(target_os = "none")']
 runner = "bootimage runner"
-linker = "rust-lld"
